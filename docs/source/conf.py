@@ -34,27 +34,42 @@ autodoc_mock_imports = [
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
-
 project = "CausalPy"
-copyright = "2022, Benjamin T. Vincent"
-author = "Benjamin T. Vincent"
+author = "PyMC Labs"
+copyright = f"2024, {author}"
 
 
 release = __version__
+version = release
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
+# Add any Sphinx extension module names here, as strings
 extensions = [
-    "myst_nb",
-    "sphinxcontrib.bibtex",
+    # extensions from sphinx base
     "sphinx.ext.autodoc",
-    "sphinx.ext.intersphinx",
+    "sphinx.ext.autosummary",
+    "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
+    "sphinx.ext.intersphinx",
+    "sphinx.ext.napoleon",
     "sphinx_autodoc_typehints",
+    # extensions provided by other packages
+    "sphinxcontrib.bibtex",
+    "matplotlib.sphinxext.plot_directive",  # needed to plot in docstrings
+    "myst_nb",
+    "notfound.extension",
+    "sphinx_copybutton",
+    "sphinx_design",
 ]
 
 nb_execution_mode = "off"
+
+# configure copy button to avoid copying sphinx or console characters
+copybutton_exclude = ".linenos, .gp"
+copybutton_prompt_text = r">>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: | {5,8}: "
+copybutton_prompt_is_regexp = True
 
 source_suffix = {
     ".rst": "restructuredtext",
@@ -70,10 +85,39 @@ bibtex_bibfiles = ["references.bib"]
 bibtex_default_style = "unsrt"
 bibtex_reference_style = "author_year"
 
+
+# numpydoc and autodoc typehints config
+numpydoc_show_class_members = False
+numpydoc_xref_param_type = True
+# fmt: off
+numpydoc_xref_ignore = {
+    "of", "or", "optional", "default", "numeric", "type", "scalar", "1D", "2D", "3D", "nD", "array",
+    "instance", "M", "N"
+}
+# fmt: on
+numpydoc_xref_aliases = {
+    "TensorVariable": ":class:`~pytensor.tensor.TensorVariable`",
+    "RandomVariable": ":class:`~pytensor.tensor.random.RandomVariable`",
+    "ndarray": ":class:`~numpy.ndarray`",
+    "InferenceData": ":class:`~arviz.InferenceData`",
+    "Model": ":class:`~pymc.Model`",
+    "tensor_like": ":term:`tensor_like`",
+    "unnamed_distribution": ":term:`unnamed_distribution`",
+}
+# don't add a return type section, use standard return with type info
+typehints_document_rtype = False
+
 # -- intersphinx config -------------------------------------------------------
 intersphinx_mapping = {
-    "python": ("https://docs.python.org/3", None),
+    "examples": ("https://www.pymc.io/projects/examples/en/latest/", None),
+    "mpl": ("https://matplotlib.org/stable", None),
+    "numpy": ("https://numpy.org/doc/stable/", None),
+    "pandas": ("https://pandas.pydata.org/pandas-docs/stable/", None),
     "pymc": ("https://www.pymc.io/projects/docs/en/stable/", None),
+    "python": ("https://docs.python.org/3", None),
+    "scikit-learn": ("https://scikit-learn.org/stable/", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy/", None),
+    "xarray": ("https://docs.xarray.dev/en/stable/", None),
 }
 
 # MyST options for working with markdown files.
@@ -89,13 +133,25 @@ myst_enable_extensions = [
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = "sphinx_rtd_theme"
+html_theme = "labs_sphinx_theme"
 html_static_path = ["_static"]
-html_logo = "_static/logo.png"
 html_favicon = "_static/favicon_logo.png"
+# Theme options are theme-specific and customize the look and feel of a theme
+# further.  For a list of options available for each theme, see the
+# documentation.
 html_theme_options = {
-    "logo_only": True,
-    "display_version": False,
+    "logo": {
+        "image_light": "_static/flat_logo.png",
+        "image_dark": "_static/flat_logo_darkmode.png",
+    },
+    "analytics": {"google_analytics_id": "G-3MCDG3M7X6"},
+}
+html_context = {
+    "github_user": "pymc-labs",
+    "github_repo": "CausalPy",
+    "github_version": "main",
+    "doc_path": "docs/source/",
+    "default_mode": "light",
 }
 
 # -- Options for autodoc ----------------------------------------------------

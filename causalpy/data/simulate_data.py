@@ -1,6 +1,20 @@
+#   Copyright 2024 The PyMC Labs Developers
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
 """
 Functions that generate data sets used in examples
 """
+
 import numpy as np
 import pandas as pd
 from scipy.stats import dirichlet, gamma, norm, uniform
@@ -44,7 +58,7 @@ def generate_synthetic_control_data(
     Generates data for synthetic control example.
 
     :param N:
-        Number fo data points
+        Number of data points
     :param treatment_time:
         Index where treatment begins in the generated dataframe
     :param grw_mu:
@@ -57,9 +71,7 @@ def generate_synthetic_control_data(
     Example
     --------
     >>> from causalpy.data.simulate_data import generate_synthetic_control_data
-    >>> df, weightings_true = generate_synthetic_control_data(
-    ...                             treatment_time=70
-    ... )
+    >>> df, weightings_true = generate_synthetic_control_data(treatment_time=70)
     """
 
     # 1. Generate non-treated variables
@@ -253,8 +265,9 @@ def generate_regression_discontinuity_data(
     >>> import pathlib
     >>> from causalpy.data.simulate_data import generate_regression_discontinuity_data
     >>> df = generate_regression_discontinuity_data(true_treatment_threshold=0.5)
-    >>> df.to_csv(pathlib.Path.cwd() / 'regression_discontinuity.csv',
-    ...     index=False) # doctest: +SKIP
+    >>> df.to_csv(
+    ...     pathlib.Path.cwd() / "regression_discontinuity.csv", index=False
+    ... )  # doctest: +SKIP
     """
 
     def is_treated(x):
@@ -277,20 +290,16 @@ def generate_ancova_data(
     N=200, pre_treatment_means=np.array([10, 12]), treatment_effect=2, sigma=1
 ):
     """
-    Generate ANCOVA eample data
+    Generate ANCOVA example data
 
     Example
     --------
     >>> import pathlib
     >>> from causalpy.data.simulate_data import generate_ancova_data
     >>> df = generate_ancova_data(
-    ...     N=200,
-    ...     pre_treatment_means=np.array([10, 12]),
-    ...     treatment_effect=2,
-    ...     sigma=1
+    ...     N=200, pre_treatment_means=np.array([10, 12]), treatment_effect=2, sigma=1
     ... )
-    >>> df.to_csv(pathlib.Path.cwd() / 'ancova_data.csv',
-    ...     index=False) # doctest: +SKIP
+    >>> df.to_csv(pathlib.Path.cwd() / "ancova_data.csv", index=False)  # doctest: +SKIP
     """
     group = np.random.choice(2, size=N)
     pre = np.random.normal(loc=pre_treatment_means[group])
@@ -310,15 +319,6 @@ def generate_geolift_data():
     treatment_time = pd.to_datetime("2022-01-01")
     causal_impact = 0.2
 
-    def create_series(n=52, amplitude=1, length_scale=2):
-        """
-        Returns numpy tile with generated seasonality data repeated over
-        multiple years
-        """
-        return np.tile(
-            generate_seasonality(n=n, amplitude=amplitude, length_scale=2) + 3, n_years
-        )
-
     time = pd.date_range(start="2019-01-01", periods=52 * n_years, freq="W")
 
     untreated = [
@@ -331,7 +331,12 @@ def generate_geolift_data():
     ]
 
     df = (
-        pd.DataFrame({country: create_series() for country in untreated})
+        pd.DataFrame(
+            {
+                country: create_series(n_years=n_years, intercept=3)
+                for country in untreated
+            }
+        )
         .assign(time=time)
         .set_index("time")
     )
@@ -346,6 +351,67 @@ def generate_geolift_data():
 
     # add treatment effect
     df["Denmark"] += np.where(df.index < treatment_time, 0, causal_impact)
+
+    # ensure we never see any negative sales
+    df = df.clip(lower=0)
+
+    return df
+
+
+def generate_multicell_geolift_data():
+    """Generate synthetic data for a geolift example. This will consists of 6 untreated
+    countries. The treated unit `Denmark` is a weighted combination of the untreated
+    units. We additionally specify a treatment effect which takes effect after the
+    `treatment_time`. The timeseries data is observed at weekly resolution and has
+    annual seasonality, with this seasonality being a drawn from a Gaussian Process with
+    a periodic kernel."""
+    n_years = 4
+    treatment_time = pd.to_datetime("2022-01-01")
+    causal_impact = 0.2
+    time = pd.date_range(start="2019-01-01", periods=52 * n_years, freq="W")
+
+    untreated = [
+        "u1",
+        "u2",
+        "u3",
+        "u4",
+        "u5",
+        "u6",
+        "u7",
+        "u8",
+        "u9",
+        "u10",
+        "u11",
+        "u12",
+    ]
+
+    df = (
+        pd.DataFrame(
+            {
+                country: create_series(n_years=n_years, intercept=3)
+                for country in untreated
+            }
+        )
+        .assign(time=time)
+        .set_index("time")
+    )
+
+    treated = ["t1", "t2", "t3", "t4"]
+
+    for treated_geo in treated:
+        # create treated unit as a weighted sum of the untreated units
+        weights = np.random.dirichlet(np.ones(len(untreated)), size=1)[0]
+        df[treated_geo] = np.dot(df[untreated].values, weights)
+        # add treatment effect
+        df[treated_geo] += np.where(df.index < treatment_time, 0, causal_impact)
+
+    # add observation noise to all geos
+    for col in untreated + treated:
+        df[col] += np.random.normal(size=len(df), scale=0.1)
+
+    # ensure we never see any negative sales
+    df = df.clip(lower=0)
+
     return df
 
 
@@ -369,7 +435,18 @@ def generate_seasonality(n=12, amplitude=1, length_scale=0.5):
 
 
 def periodic_kernel(x1, x2, period=1, length_scale=1, amplitude=1):
-    """Generate a periodic kernal for gaussian process"""
+    """Generate a periodic kernel for gaussian process"""
     return amplitude**2 * np.exp(
         -2 * np.sin(np.pi * np.abs(x1 - x2) / period) ** 2 / length_scale**2
+    )
+
+
+def create_series(n=52, amplitude=1, length_scale=2, n_years=4, intercept=3):
+    """
+    Returns numpy tile with generated seasonality data repeated over
+    multiple years
+    """
+    return np.tile(
+        generate_seasonality(n=n, amplitude=amplitude, length_scale=2) + intercept,
+        n_years,
     )

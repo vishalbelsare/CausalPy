@@ -1,15 +1,17 @@
-"""
-Defines generic PyMC ModelBuilder class and subclasses for
-
-- WeightedSumFitter model for Synthetic Control experiments
-- LinearRegression model
-
-Models are intended to be used from inside an experiment
-class (see :doc:`PyMC experiments</api_pymc_experiments>`).
-This is why the examples require some extra
-manipulation input data, often to ensure `y` has the correct shape.
-
-"""
+#   Copyright 2024 The PyMC Labs Developers
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+"""Custom PyMC models for causal inference"""
 
 from typing import Any, Dict, Optional
 
@@ -18,31 +20,28 @@ import numpy as np
 import pandas as pd
 import pymc as pm
 import pytensor.tensor as pt
+import xarray as xr
 from arviz import r2_score
 
+from causalpy.utils import round_num
 
-class ModelBuilder(pm.Model):
-    """
-    This is a wrapper around pm.Model to give scikit-learn like API.
 
-    Public Methods
-    ---------------
-    - build_model: must be implemented by subclasses
-    - fit: populates idata attribute
-    - predict: returns predictions on new data
-    - score: returns Bayesian :math:`R^2`
+class PyMCModel(pm.Model):
+    """A wrapper class for PyMC models. This provides a scikit-learn like interface with
+    methods like `fit`, `predict`, and `score`. It also provides other methods which are
+    useful for causal inference.
 
     Example
     -------
     >>> import causalpy as cp
     >>> import numpy as np
     >>> import pymc as pm
-    >>> from causalpy.pymc_models import ModelBuilder
-    >>> class MyToyModel(ModelBuilder):
+    >>> from causalpy.pymc_models import PyMCModel
+    >>> class MyToyModel(PyMCModel):
     ...     def build_model(self, X, y, coords):
     ...         with self:
-    ...             X_ = pm.MutableData(name="X", value=X)
-    ...             y_ = pm.MutableData(name="y", value=y)
+    ...             X_ = pm.Data(name="X", value=X)
+    ...             y_ = pm.Data(name="y", value=y)
     ...             beta = pm.Normal("beta", mu=0, sigma=1, shape=X_.shape[1])
     ...             sigma = pm.HalfNormal("sigma", sigma=1)
     ...             mu = pm.Deterministic("mu", pm.math.dot(X_, beta))
@@ -51,22 +50,22 @@ class ModelBuilder(pm.Model):
     >>> X = rng.normal(loc=0, scale=1, size=(20, 2))
     >>> y = rng.normal(loc=0, scale=1, size=(20,))
     >>> model = MyToyModel(
-    ...             sample_kwargs={
-    ...                 "chains": 2,
-    ...                 "draws": 2000,
-    ...                 "progressbar": False,
-    ...                 "random_seed": rng,
-    ...             }
+    ...     sample_kwargs={
+    ...         "chains": 2,
+    ...         "draws": 2000,
+    ...         "progressbar": False,
+    ...         "random_seed": 42,
+    ...     }
     ... )
     >>> model.fit(X, y)
-    Inference...
-    >>> X_new = rng.normal(loc=0, scale=1, size=(20,2))
-    >>> model.predict(X_new)
-    Inference...
-    >>> model.score(X, y) # doctest: +NUMBER
-    r2        0.3
-    r2_std    0.0
+    Inference data...
+    >>> model.score(X, y)  # doctest: +ELLIPSIS
+    r2        ...
+    r2_std    ...
     dtype: float64
+    >>> X_new = rng.normal(loc=0, scale=1, size=(20, 2))
+    >>> model.predict(X_new)
+    Inference data...
     """
 
     def __init__(self, sample_kwargs: Optional[Dict[str, Any]] = None):
@@ -93,16 +92,13 @@ class ModelBuilder(pm.Model):
             pm.set_data({"X": X})
 
     def fit(self, X, y, coords: Optional[Dict[str, Any]] = None) -> None:
-        """Draw samples fromposterior, prior predictive, and posterior predictive
+        """Draw samples from posterior, prior predictive, and posterior predictive
         distributions, placing them in the model's idata attribute.
         """
 
         # Ensure random_seed is used in sample_prior_predictive() and
         # sample_posterior_predictive() if provided in sample_kwargs.
-        if "random_seed" in self.sample_kwargs:
-            random_seed = self.sample_kwargs["random_seed"]
-        else:
-            random_seed = None
+        random_seed = self.sample_kwargs.get("random_seed", None)
 
         self.build_model(X, y, coords)
         with self:
@@ -124,15 +120,24 @@ class ModelBuilder(pm.Model):
 
         """
 
+        # Ensure random_seed is used in sample_prior_predictive() and
+        # sample_posterior_predictive() if provided in sample_kwargs.
+        random_seed = self.sample_kwargs.get("random_seed", None)
         self._data_setter(X)
         with self:  # sample with new input data
             post_pred = pm.sample_posterior_predictive(
-                self.idata, var_names=["y_hat", "mu"], progressbar=False
+                self.idata,
+                var_names=["y_hat", "mu"],
+                progressbar=False,
+                random_seed=random_seed,
             )
         return post_pred
 
     def score(self, X, y) -> pd.Series:
         """Score the Bayesian :math:`R^2` given inputs ``X`` and outputs ``y``.
+
+        Note that the score is based on a comparison of the observed data ``y`` and the
+        model's expected value of the data, `mu`.
 
         .. caution::
 
@@ -140,87 +145,55 @@ class ModelBuilder(pm.Model):
             determination, https://en.wikipedia.org/wiki/Coefficient_of_determination.
 
         """
-        yhat = self.predict(X)
-        yhat = az.extract(
-            yhat, group="posterior_predictive", var_names="y_hat"
-        ).T.values
+        mu = self.predict(X)
+        mu = az.extract(mu, group="posterior_predictive", var_names="mu").T.values
         # Note: First argument must be a 1D array
-        return r2_score(y.flatten(), yhat)
+        return r2_score(y.flatten(), mu)
 
-    # .stack(sample=("chain", "draw")
+    def calculate_impact(self, y_true, y_pred):
+        pre_data = xr.DataArray(y_true, dims=["obs_ind"])
+        impact = pre_data - y_pred["posterior_predictive"]["y_hat"]
+        return impact.transpose(..., "obs_ind")
 
+    def calculate_cumulative_impact(self, impact):
+        return impact.cumsum(dim="obs_ind")
 
-class WeightedSumFitter(ModelBuilder):
-    """
-    Used for synthetic control experiments
+    def print_coefficients(self, labels, round_to=None) -> None:
+        def print_row(
+            max_label_length: int, name: str, coeff_samples: xr.DataArray, round_to: int
+        ) -> None:
+            """Print one row of the coefficient table"""
+            formatted_name = f"  {name: <{max_label_length}}"
+            formatted_val = f"{round_num(coeff_samples.mean().data, round_to)}, 94% HDI [{round_num(coeff_samples.quantile(0.03).data, round_to)}, {round_num(coeff_samples.quantile(1-0.03).data, round_to)}]"  # noqa: E501
+            print(f"  {formatted_name}  {formatted_val}")
 
-    .. note::
-        Generally, the `.fit()` method should be used rather than
-        calling `.build_model()` directly.
+        print("Model coefficients:")
+        coeffs = az.extract(self.idata.posterior, var_names="beta")
 
-    Defines the PyMC model:
+        # Determine the width of the longest label
+        max_label_length = max(len(name) for name in labels + ["sigma"])
 
-    .. math::
+        for name in labels:
+            coeff_samples = coeffs.sel(coeffs=name)
+            print_row(max_label_length, name, coeff_samples, round_to)
 
-        \sigma &\sim \mathrm{HalfNormal}(1)
-
-        \\beta &\sim \mathrm{Dirichlet}(1,...,1)
-
-        \mu &= X * \\beta
-
-        y &\sim \mathrm{Normal}(\mu, \sigma)
-
-    Example
-    --------
-    >>> import causalpy as cp
-    >>> import numpy as np
-    >>> from causalpy.pymc_models import WeightedSumFitter
-    >>> sc = cp.load_data("sc")
-    >>> X = sc[['a', 'b', 'c', 'd', 'e', 'f', 'g']]
-    >>> y = np.asarray(sc['actual']).reshape((sc.shape[0], 1))
-    >>> wsf = WeightedSumFitter(sample_kwargs={"progressbar": False})
-    >>> wsf.fit(X,y)
-    Inference ...
-    """  # noqa: W605
-
-    def build_model(self, X, y, coords):
-        """
-        Defines the PyMC model
-        """
-        with self:
-            self.add_coords(coords)
-            n_predictors = X.shape[1]
-            X = pm.MutableData("X", X, dims=["obs_ind", "coeffs"])
-            y = pm.MutableData("y", y[:, 0], dims="obs_ind")
-            # TODO: There we should allow user-specified priors here
-            beta = pm.Dirichlet("beta", a=np.ones(n_predictors), dims="coeffs")
-            # beta = pm.Dirichlet(
-            #     name="beta", a=(1 / n_predictors) * np.ones(n_predictors),
-            #     dims="coeffs"
-            # )
-            sigma = pm.HalfNormal("sigma", 1)
-            mu = pm.Deterministic("mu", pm.math.dot(X, beta), dims="obs_ind")
-            pm.Normal("y_hat", mu, sigma, observed=y, dims="obs_ind")
+        # Add coefficient for measurement std
+        coeff_samples = az.extract(self.idata.posterior, var_names="sigma")
+        name = "sigma"
+        print_row(max_label_length, name, coeff_samples, round_to)
 
 
-class LinearRegression(ModelBuilder):
-    """
-    Custom PyMC model for linear regression
-
-    .. note:
-        Generally, the `.fit()` method should be used rather than
-        calling `.build_model()` directly.
+class LinearRegression(PyMCModel):
+    r"""
+    Custom PyMC model for linear regression.
 
     Defines the PyMC model
 
     .. math::
-        \\beta &\sim \mathrm{Normal}(0, 50)
-
-        \sigma &\sim \mathrm{HalfNormal}(1)
-
-        \mu &= X * \\beta
-
-        y &\sim \mathrm{Normal}(\mu, \sigma)
+        \beta &\sim \mathrm{Normal}(0, 50) \\
+        \sigma &\sim \mathrm{HalfNormal}(1) \\
+        \mu &= X \cdot \beta \\
+        y &\sim \mathrm{Normal}(\mu, \sigma) \\
 
     Example
     --------
@@ -236,7 +209,7 @@ class LinearRegression(ModelBuilder):
     ...                 'obs_indx': np.arange(rd.shape[0])
     ...                },
     ... )
-    Inference...
+    Inference data...
     """  # noqa: W605
 
     def build_model(self, X, y, coords):
@@ -245,15 +218,60 @@ class LinearRegression(ModelBuilder):
         """
         with self:
             self.add_coords(coords)
-            X = pm.MutableData("X", X, dims=["obs_ind", "coeffs"])
-            y = pm.MutableData("y", y[:, 0], dims="obs_ind")
+            X = pm.Data("X", X, dims=["obs_ind", "coeffs"])
+            y = pm.Data("y", y[:, 0], dims="obs_ind")
             beta = pm.Normal("beta", 0, 50, dims="coeffs")
             sigma = pm.HalfNormal("sigma", 1)
             mu = pm.Deterministic("mu", pm.math.dot(X, beta), dims="obs_ind")
             pm.Normal("y_hat", mu, sigma, observed=y, dims="obs_ind")
 
 
-class InstrumentalVariableRegression(ModelBuilder):
+class WeightedSumFitter(PyMCModel):
+    r"""
+    Used for synthetic control experiments.
+
+    Defines the PyMC model:
+
+    .. math::
+        \sigma &\sim \mathrm{HalfNormal}(1) \\
+        \beta &\sim \mathrm{Dirichlet}(1,...,1) \\
+        \mu &= X \cdot \beta \\
+        y &\sim \mathrm{Normal}(\mu, \sigma) \\
+
+    Example
+    --------
+    >>> import causalpy as cp
+    >>> import numpy as np
+    >>> from causalpy.pymc_models import WeightedSumFitter
+    >>> sc = cp.load_data("sc")
+    >>> X = sc[['a', 'b', 'c', 'd', 'e', 'f', 'g']]
+    >>> y = np.asarray(sc['actual']).reshape((sc.shape[0], 1))
+    >>> wsf = WeightedSumFitter(sample_kwargs={"progressbar": False})
+    >>> wsf.fit(X,y)
+    Inference data...
+    """  # noqa: W605
+
+    def build_model(self, X, y, coords):
+        """
+        Defines the PyMC model
+        """
+        with self:
+            self.add_coords(coords)
+            n_predictors = X.shape[1]
+            X = pm.Data("X", X, dims=["obs_ind", "coeffs"])
+            y = pm.Data("y", y[:, 0], dims="obs_ind")
+            # TODO: There we should allow user-specified priors here
+            beta = pm.Dirichlet("beta", a=np.ones(n_predictors), dims="coeffs")
+            # beta = pm.Dirichlet(
+            #     name="beta", a=(1 / n_predictors) * np.ones(n_predictors),
+            #     dims="coeffs"
+            # )
+            sigma = pm.HalfNormal("sigma", 1)
+            mu = pm.Deterministic("mu", pm.math.dot(X, beta), dims="obs_ind")
+            pm.Normal("y_hat", mu, sigma, observed=y, dims="obs_ind")
+
+
+class InstrumentalVariableRegression(PyMCModel):
     """Custom PyMC model for instrumental linear regression
 
     Example
@@ -268,11 +286,11 @@ class InstrumentalVariableRegression(ModelBuilder):
     >>> ## Ensure the endogeneity of the the treatment variable
     >>> X = -1 + 4 * Z + e2 + 2 * e1
     >>> y = 2 + 3 * X + 3 * e1
-    >>> t = X.reshape(10,1)
-    >>> y = y.reshape(10,1)
-    >>> Z = np.asarray([[1, Z[i]] for i in range(0,10)])
-    >>> X = np.asarray([[1, X[i]] for i in range(0,10)])
-    >>> COORDS = {'instruments': ['Intercept', 'Z'], 'covariates': ['Intercept', 'X']}
+    >>> t = X.reshape(10, 1)
+    >>> y = y.reshape(10, 1)
+    >>> Z = np.asarray([[1, Z[i]] for i in range(0, 10)])
+    >>> X = np.asarray([[1, X[i]] for i in range(0, 10)])
+    >>> COORDS = {"instruments": ["Intercept", "Z"], "covariates": ["Intercept", "X"]}
     >>> sample_kwargs = {
     ...     "tune": 5,
     ...     "draws": 10,
@@ -282,12 +300,20 @@ class InstrumentalVariableRegression(ModelBuilder):
     ...     "progressbar": False,
     ... }
     >>> iv_reg = InstrumentalVariableRegression(sample_kwargs=sample_kwargs)
-    >>> iv_reg.fit(X, Z,y, t, COORDS, {
-    ...                  "mus": [[-2,4], [0.5, 3]],
-    ...                  "sigmas": [1, 1],
-    ...                  "eta": 2,
-    ...                  "lkj_sd": 2,
-    ...              })
+    >>> iv_reg.fit(
+    ...     X,
+    ...     Z,
+    ...     y,
+    ...     t,
+    ...     COORDS,
+    ...     {
+    ...         "mus": [[-2, 4], [0.5, 3]],
+    ...         "sigmas": [1, 1],
+    ...         "eta": 2,
+    ...         "lkj_sd": 1,
+    ...     },
+    ...     None,
+    ... )
     Inference data...
     """
 
@@ -305,7 +331,6 @@ class InstrumentalVariableRegression(ModelBuilder):
                       sigmas of both regressions
                       :code:`priors = {"mus": [0, 0], "sigmas": [1, 1],
                       "eta": 2, "lkj_sd": 2}`
-
         """
 
         # --- Priors ---
@@ -323,7 +348,7 @@ class InstrumentalVariableRegression(ModelBuilder):
                 sigma=priors["sigmas"][1],
                 dims="covariates",
             )
-            sd_dist = pm.HalfCauchy.dist(beta=priors["lkj_sd"], shape=2)
+            sd_dist = pm.Exponential.dist(priors["lkj_sd"], shape=2)
             chol, corr, sigmas = pm.LKJCholeskyCov(
                 name="chol_cov",
                 eta=priors["eta"],
@@ -349,15 +374,116 @@ class InstrumentalVariableRegression(ModelBuilder):
                 shape=(X.shape[0], 2),
             )
 
-    def fit(self, X, Z, y, t, coords, priors):
-        """Draw samples from posterior, prior predictive, and posterior predictive
-        distributions.
+    def sample_predictive_distribution(self, ppc_sampler="jax"):
+        """Function to sample the Multivariate Normal posterior predictive
+        Likelihood term in the IV class. This can be slow without
+        using the JAX sampler compilation method. If using the
+        JAX sampler it will sample only the posterior predictive distribution.
+        If using the PYMC sampler if will sample both the prior
+        and posterior predictive distributions."""
+        random_seed = self.sample_kwargs.get("random_seed", None)
+
+        if ppc_sampler == "jax":
+            with self:
+                self.idata.extend(
+                    pm.sample_posterior_predictive(
+                        self.idata,
+                        random_seed=random_seed,
+                        compile_kwargs={"mode": "JAX"},
+                    )
+                )
+        elif ppc_sampler == "pymc":
+            with self:
+                self.idata.extend(pm.sample_prior_predictive(random_seed=random_seed))
+                self.idata.extend(
+                    pm.sample_posterior_predictive(
+                        self.idata,
+                        random_seed=random_seed,
+                    )
+                )
+
+    def fit(self, X, Z, y, t, coords, priors, ppc_sampler=None):
+        """Draw samples from posterior distribution and potentially
+        from the prior and posterior predictive distributions. The
+        fit call can take values for the
+        ppc_sampler = ['jax', 'pymc', None]
+        We default to None, so the user can determine if they wish
+        to spend time sampling the posterior predictive distribution
+        independently.
         """
+
+        # Ensure random_seed is used in sample_prior_predictive() and
+        # sample_posterior_predictive() if provided in sample_kwargs.
+        # Use JAX for ppc sampling of multivariate likelihood
+
         self.build_model(X, Z, y, t, coords, priors)
         with self:
             self.idata = pm.sample(**self.sample_kwargs)
-            self.idata.extend(pm.sample_prior_predictive())
+        self.sample_predictive_distribution(ppc_sampler=ppc_sampler)
+        return self.idata
+
+
+class PropensityScore(PyMCModel):
+    r"""
+    Custom PyMC model for inverse propensity score models
+
+    .. note:
+        Generally, the `.fit()` method should be used rather than
+        calling `.build_model()` directly.
+
+    Defines the PyMC model
+
+    .. math::
+        \beta &\sim \mathrm{Normal}(0, 1) \\
+        \sigma &\sim \mathrm{HalfNormal}(1) \\
+        \mu &= X \cdot \beta \\
+        p &= \text{logit}^{-1}(\mu) \\
+        t &\sim \mathrm{Bernoulli}(p)
+
+    Example
+    --------
+    >>> import causalpy as cp
+    >>> import numpy as np
+    >>> from causalpy.pymc_models import PropensityScore
+    >>> df = cp.load_data('nhefs')
+    >>> X = df[["age", "race"]]
+    >>> t = np.asarray(df["trt"])
+    >>> ps = PropensityScore(sample_kwargs={"progressbar": False})
+    >>> ps.fit(X, t, coords={
+    ...                 'coeffs': ['age', 'race'],
+    ...                 'obs_indx': np.arange(df.shape[0])
+    ...                },
+    ... )
+    Inference...
+    """  # noqa: W605
+
+    def build_model(self, X, t, coords):
+        "Defines the PyMC propensity model"
+        with self:
+            self.add_coords(coords)
+            X_data = pm.MutableData("X", X, dims=["obs_ind", "coeffs"])
+            t_data = pm.MutableData("t", t.flatten(), dims="obs_ind")
+            b = pm.Normal("b", mu=0, sigma=1, dims="coeffs")
+            mu = pm.math.dot(X_data, b)
+            p = pm.Deterministic("p", pm.math.invlogit(mu))
+            pm.Bernoulli("t_pred", p=p, observed=t_data, dims="obs_ind")
+
+    def fit(self, X, t, coords):
+        """Draw samples from posterior, prior predictive, and posterior predictive
+        distributions. We overwrite the base method because the base method assumes
+        a variable y and we use t to indicate the treatment variable here.
+        """
+        # Ensure random_seed is used in sample_prior_predictive() and
+        # sample_posterior_predictive() if provided in sample_kwargs.
+        random_seed = self.sample_kwargs.get("random_seed", None)
+
+        self.build_model(X, t, coords)
+        with self:
+            self.idata = pm.sample(**self.sample_kwargs)
+            self.idata.extend(pm.sample_prior_predictive(random_seed=random_seed))
             self.idata.extend(
-                pm.sample_posterior_predictive(self.idata, progressbar=False)
+                pm.sample_posterior_predictive(
+                    self.idata, progressbar=False, random_seed=random_seed
+                )
             )
         return self.idata

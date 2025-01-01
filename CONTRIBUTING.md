@@ -47,10 +47,10 @@ For more instructions see the [Pull request checklist](#pull-request-checklist)
 
    Always use a feature branch. It's good practice to never routinely work on the `main` branch of any repository.
 
-1. Create a new environment using Python >=3.8, for example 3.11
+1. Create the environment from the `environment.yml` file.
 
     ```bash
-    conda create --name CausalPy python=3.11
+    mamba env create -f environment.yml
     ```
 
     Activate the environment.
@@ -59,19 +59,20 @@ For more instructions see the [Pull request checklist](#pull-request-checklist)
     conda activate CausalPy
     ```
 
-    Install the package (in editable mode) and its development dependencies:
+    Install the package (in editable mode) and its development dependencies. The `--no-deps` flag is used to avoid installing the dependencies of `CausalPy` as they are already installed when installing the development dependencies. This can end up interfering with the conda-only install of pymc.
 
     ```bash
-    pip install -e .
+    pip install --no-deps -e .
     ```
 
 	Install development dependencies
 
-	```
+	```bash
 	pip install 'causalpy[dev]'
 	pip install 'causalpy[docs]'
 	pip install 'causalpy[test]'
 	pip install 'causalpy[lint]'
+	pip install 'pylint'
 	```
 
 	It may also be necessary to [install](https://pandoc.org/installing.html) `pandoc`. On a mac, run `brew install pandoc`.
@@ -127,12 +128,12 @@ We recommend that your contribution complies with the following guidelines befor
     make doctest
     ```
 
-- Doctest can also be run directly via pytest, which can be helpful to run only specific tests during development. The following commands run all doctests, only doctests in the pymc_models module, and only the doctests for the `ModelBuilder` class in pymc_models:
+- Doctest can also be run directly via pytest, which can be helpful to run only specific tests during development. The following commands run all doctests, only doctests in the pymc_models module, and only the doctests for the `PyMCModel` class in pymc_models:
 
     ```bash
     pytest --doctest-modules causalpy/
     pytest --doctest-modules causalpy/pymc_models.py
-    pytest --doctest-modules causalpy/pmyc_models.py::causalpy.pymc_models.ModelBuilder
+    pytest --doctest-modules causalpy/pmyc_models.py::causalpy.pymc_models.PyMCModel
     ```
 
 - To indicate a work in progress please mark the PR as `draft`. Drafts may be useful to (1) indicate you are working on something to avoid duplicated work, (2) request broad review of functionality or API, or (3) seek collaborators.

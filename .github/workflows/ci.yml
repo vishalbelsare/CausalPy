@@ -7,43 +7,34 @@ on:
     branches: [main]
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.8", "3.9", "3.10"]
-
-    steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Run lint
-        uses: pre-commit/action@v3.0.0
-
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.8", "3.9", "3.10"]
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Update pip and setuptools
+        run: pip install --upgrade pip setuptools
+      - name: Setup environment
+        run: pip install -e .[test]
       - name: Run doctests
-        run: |
-          pip install -e .[test]
-          pytest --doctest-modules --ignore=causalpy/tests/ causalpy/
+        run: pytest --doctest-modules --ignore=causalpy/tests/ causalpy/
+      - name: Run extra tests
+        run: pytest docs/source/.codespell/test_notebook_to_markdown.py
       - name: Run tests
+        run: pytest --cov-report=xml --no-cov-on-fail
+      - name: Check codespell for notebooks
         run: |
-          pip install -e .[test]
-          pytest --cov-report=xml --no-cov-on-fail
+          python ./docs/source/.codespell/notebook_to_markdown.py --tempdir tmp_markdown
+          codespell
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }} # use token for more robust uploads
           name: ${{ matrix.python-version }}

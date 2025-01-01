@@ -1,8 +1,25 @@
+#   Copyright 2024 The PyMC Labs Developers
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
 """
 Utility functions
 """
+
+from typing import Union
+
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 
 def _is_variable_dummy_coded(series: pd.Series) -> bool:
@@ -48,3 +65,22 @@ def _format_sig_figs(value, default=None):
     if value == 0:
         return 1
     return max(int(np.log10(np.abs(value))) + 1, default)
+
+
+def convert_to_string(x: Union[float, xr.DataArray], round_to: int = 2) -> str:
+    """Utility function which takes in numeric inputs and returns a string."""
+    if isinstance(x, float):
+        # In the case of a float, we return the number rounded to 2 decimal places
+        return f"{x:.2f}"
+    elif isinstance(x, xr.DataArray):
+        # In the case of an xarray object, we return the mean and 94% CI
+        percentiles = x.quantile([0.03, 1 - 0.03]).values
+        ci = (
+            r"$CI_{94\%}$"
+            + f"[{round_num(percentiles[0], round_to)}, {round_num(percentiles[1], round_to)}]"
+        )
+        return f"{x.mean().values:.2f}" + ci
+    else:
+        raise ValueError(
+            "Type not supported. Please provide a float or an xarray object."
+        )

@@ -1,3 +1,16 @@
+#   Copyright 2024 The PyMC Labs Developers
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
 import arviz as az
 import numpy as np
 import pandas as pd
@@ -5,44 +18,44 @@ import pymc as pm
 import pytest
 
 import causalpy as cp
-from causalpy.pymc_models import ModelBuilder
+from causalpy.pymc_models import PyMCModel
 
 sample_kwargs = {"tune": 20, "draws": 20, "chains": 2, "cores": 2}
 
 
-class MyToyModel(ModelBuilder):
+class MyToyModel(PyMCModel):
     """
-    A subclass of ModelBuilder with a simple regression model for use in tests.
+    A subclass of PyMCModel with a simple regression model for use in tests.
     """
 
     def build_model(self, X, y, coords):
         """
-        Required .build_model() method of a ModelBuilder subclass
+        Required .build_model() method of a PyMCModel subclass
 
         This is a basic 1-variable linear regression model for use in tests.
         """
         with self:
-            X_ = pm.MutableData(name="X", value=X)
-            y_ = pm.MutableData(name="y", value=y)
+            X_ = pm.Data(name="X", value=X)
+            y_ = pm.Data(name="y", value=y)
             beta = pm.Normal("beta", mu=0, sigma=1, shape=X_.shape[1])
             sigma = pm.HalfNormal("sigma", sigma=1)
             mu = pm.Deterministic("mu", pm.math.dot(X_, beta))
             pm.Normal("y_hat", mu=mu, sigma=sigma, observed=y_)
 
 
-class TestModelBuilder:
+class TestPyMCModel:
     """
-    Related tests that check aspects of ModelBuilder objects.
+    Related tests that check aspects of PyMCModel objects.
     """
 
     def test_init(self):
         """
         Test initialization.
 
-        Creates ModelBuilder() object and checks that idata is None and no sample
+        Creates PyMCModel() object and checks that idata is None and no sample
         kwargs are specified.
         """
-        mb = ModelBuilder()
+        mb = PyMCModel()
         assert mb.idata is None
         assert mb.sample_kwargs == {}
 
@@ -57,23 +70,23 @@ class TestModelBuilder:
     )
     def test_model_builder(self, X, y, coords) -> None:
         """
-        Tests that a ModelBuilder() object without a .build_model() method raises
+        Tests that a PyMCModel() object without a .build_model() method raises
         appropriate exception.
         """
         with pytest.raises(
             NotImplementedError, match="This method must be implemented by a subclass"
         ):
-            ModelBuilder().build_model(X=X, y=y, coords=coords)
+            PyMCModel().build_model(X=X, y=y, coords=coords)
 
     def test_fit_build_not_implemented(self):
         """
-        Tests that a ModelBuilder() object without a .fit() method raises appropriate
+        Tests that a PyMCModel() object without a .fit() method raises appropriate
         exception.
         """
         with pytest.raises(
             NotImplementedError, match="This method must be implemented by a subclass"
         ):
-            ModelBuilder().fit(X=np.ones(2), y=np.ones(3), coords={"a": 1})
+            PyMCModel().fit(X=np.ones(2), y=np.ones(3), coords={"a": 1})
 
     @pytest.mark.parametrize(
         argnames="coords",
@@ -112,13 +125,11 @@ class TestModelBuilder:
 def test_idata_property():
     """Test that we can access the idata property of the model"""
     df = cp.load_data("did")
-    result = cp.pymc_experiments.DifferenceInDifferences(
+    result = cp.DifferenceInDifferences(
         df,
         formula="y ~ 1 + group + t + group:post_treatment",
         time_variable_name="t",
         group_variable_name="group",
-        treated=1,
-        untreated=0,
         model=cp.pymc_models.LinearRegression(sample_kwargs=sample_kwargs),
     )
     assert hasattr(result, "idata")
@@ -131,30 +142,26 @@ seeds = [1234, 42, 123456789]
 @pytest.mark.parametrize("seed", seeds)
 def test_result_reproducibility(seed):
     """Test that we can reproduce the results from the model. We could in theory test
-    this with all the model and experiment types, but what is being targetted is
-    the ModelBuilder.fit method, so we should be safe testing with just one model. Here
+    this with all the model and experiment types, but what is being targeted is
+    the PyMCModel.fit method, so we should be safe testing with just one model. Here
     we use the DifferenceInDifferences experiment class."""
     # Load the data
     df = cp.load_data("did")
     # Set a random seed
     sample_kwargs["random_seed"] = seed
     # Calculate the result twice
-    result1 = cp.pymc_experiments.DifferenceInDifferences(
+    result1 = cp.DifferenceInDifferences(
         df,
         formula="y ~ 1 + group + t + group:post_treatment",
         time_variable_name="t",
         group_variable_name="group",
-        treated=1,
-        untreated=0,
         model=cp.pymc_models.LinearRegression(sample_kwargs=sample_kwargs),
     )
-    result2 = cp.pymc_experiments.DifferenceInDifferences(
+    result2 = cp.DifferenceInDifferences(
         df,
         formula="y ~ 1 + group + t + group:post_treatment",
         time_variable_name="t",
         group_variable_name="group",
-        treated=1,
-        untreated=0,
         model=cp.pymc_models.LinearRegression(sample_kwargs=sample_kwargs),
     )
     assert np.all(result1.idata.posterior.mu == result2.idata.posterior.mu)
